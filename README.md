@@ -98,6 +98,8 @@ hidden.
 
 - `app/` – FastAPI backend (`main.py`, `opencode.py`, `runner.py`, `config.py`)
 - `web/` – static UI (`index.html`, `app.js`, `styles.css`)
+- `AGENTS.md` – project guide for coding agents: idea, architecture, invariants,
+  and safe change workflow
 - `.opencode/agents/memory-builder.md` – the custom agent; its body is the
   editable system prompt (written by the app)
 - `.state/` – run metadata, job records, prompts/settings, prompt version

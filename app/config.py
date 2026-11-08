@@ -18,6 +18,15 @@ EXAMPLES_FILE = OUTPUT_DIR / "examples.jsonl"
 STATE_DIR = BASE_DIR / ".state"
 JOBS_DIR = STATE_DIR / "jobs"
 
+# --- Identity pilot ---------------------------------------------------------
+# The pilot has its own output tree and construct memory so it cannot disturb
+# the normal Memory Builder run files.
+PILOT_DIR = OUTPUT_DIR / "pilot"
+PILOT_RUNS_DIR = PILOT_DIR / "runs"
+PILOT_MEMORY_FILE = PILOT_DIR / "constructs.jsonl"
+PILOT_PROMPTS_FILE = STATE_DIR / "pilot_prompts.json"
+PILOT_JOBS_DIR = STATE_DIR / "pilot_jobs"
+
 # The custom OpenCode agent whose system prompt is the "overridden default prompt".
 AGENT_DIR = BASE_DIR / ".opencode" / "agents"
 AGENT_NAME = "memory-builder"
@@ -56,9 +65,48 @@ FIRST_EVENT_TIMEOUT = int(os.environ.get("MEMORY_BUILDER_FIRST_EVENT_TIMEOUT", "
 # Tell the UI when a cycle has produced nothing for this long.
 FIRST_EVENT_NOTICE = int(os.environ.get("MEMORY_BUILDER_FIRST_EVENT_NOTICE", "20"))
 
+# --- Identity pilot runtime -------------------------------------------------
+PILOT_DEFAULT_STEPS = int(os.environ.get("MEMORY_BUILDER_PILOT_STEPS", "12"))
+PILOT_DEFAULT_TOP_K = int(os.environ.get("MEMORY_BUILDER_PILOT_TOP_K", "3"))
+# Per-turn wall-clock timeout for a pilot think/extract call.
+PILOT_STEP_TIMEOUT = int(os.environ.get("MEMORY_BUILDER_PILOT_STEP_TIMEOUT", "240"))
+# Abort a pilot turn that accepts the request but sends no model output.
+PILOT_FIRST_EVENT_TIMEOUT = int(
+    os.environ.get("MEMORY_BUILDER_PILOT_FIRST_EVENT_TIMEOUT", "180")
+)
+PILOT_FIRST_EVENT_NOTICE = int(
+    os.environ.get("MEMORY_BUILDER_PILOT_FIRST_EVENT_NOTICE", "20")
+)
+PILOT_TURN_RETRIES = int(os.environ.get("MEMORY_BUILDER_PILOT_TURN_RETRIES", "1"))
+# Do not re-inject an identical construct for this many steps. A tight loop of
+# the same memory hit makes the pilot collapse to a fixed point.
+PILOT_MEMORY_EXCLUDE_WINDOW = int(
+    os.environ.get("MEMORY_BUILDER_PILOT_EXCLUDE_WINDOW", "3")
+)
+# Ignore weak word-overlap matches. Without a floor, unrelated seeded
+# constructs can be injected and copied into the next thought.
+PILOT_MEMORY_MIN_SCORE = float(
+    os.environ.get("MEMORY_BUILDER_PILOT_MIN_SCORE", "0.12")
+)
+# A single shared word is usually coincidental ("answer", "memory", "fix").
+# Require at least two overlapping terms so one common token cannot pull in an
+# unrelated construct from a different domain.
+PILOT_MEMORY_MIN_SHARED = int(
+    os.environ.get("MEMORY_BUILDER_PILOT_MIN_SHARED", "2")
+)
+
 
 def ensure_dirs() -> None:
-    for path in (OUTPUT_DIR, RUNS_DIR, STATE_DIR, JOBS_DIR, AGENT_DIR):
+    for path in (
+        OUTPUT_DIR,
+        RUNS_DIR,
+        STATE_DIR,
+        JOBS_DIR,
+        AGENT_DIR,
+        PILOT_DIR,
+        PILOT_RUNS_DIR,
+        PILOT_JOBS_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)
 
 

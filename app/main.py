@@ -17,8 +17,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, pilot_memory, pilot_prompts
 from .opencode import OpenCodeClient, OpenCodeServer
+from .pilot import PilotManager, new_pilot_output_path
 from .runner import JobManager, new_output_path, parse_json_object
 
 logging.basicConfig(
@@ -318,12 +319,19 @@ async def lifespan(app: FastAPI):
     migrate_legacy_runs()
     write_agent(read_agent_system() or DEFAULT_SYSTEM_PROMPT)
     ensure_prompt_version()
+    pilot_prompts.ensure_current_snapshot()
+    if not config.PILOT_MEMORY_FILE.exists():
+        try:
+            pilot_memory.seed_from_existing()
+        except Exception as exc:  # noqa: BLE001 - memory seeding is best effort
+            log.warning("pilot memory seed failed: %s", exc)
     server = OpenCodeServer()
     await server.start()
     client = OpenCodeClient(server)
     app.state.server = server
     app.state.client = client
     app.state.jobs = JobManager(client)
+    app.state.pilots = PilotManager(client)
     # Give BaryGraph a moment to connect so the first run already has its tools.
     for _ in range(30):
         try:
@@ -341,6 +349,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        try:
+            await app.state.pilots.stop_all()
+        except Exception:  # noqa: BLE001 - never block shutdown
+            pass
         await client.aclose()
         await server.stop()
 
@@ -353,7 +365,7 @@ app.mount("/static", StaticFiles(directory=str(config.WEB_DIR)), name="static")
 async def no_cache_ui(request: Request, call_next):
     """Never let a stale tab keep old HTML/JS after a prompt or UI change."""
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    if request.url.path in ("/", "/pilot") or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
@@ -383,10 +395,31 @@ class ExamplePayload(BaseModel):
     record: dict
 
 
+class PilotPromptPayload(BaseModel):
+    seed_prompt: Optional[str] = None
+    step_prompt: Optional[str] = None
+    extract_prompt: Optional[str] = None
+    base_revision: Optional[str] = None
+    prompt_comment: Optional[str] = Field(default=None, max_length=200)
+
+
+class PilotRunPayload(BaseModel):
+    question: str = Field(min_length=3, max_length=8000)
+    model: dict
+    steps: int = Field(default=config.PILOT_DEFAULT_STEPS, ge=2, le=50)
+    top_k: int = Field(default=config.PILOT_DEFAULT_TOP_K, ge=1, le=10)
+    base_revision: Optional[str] = None
+
+
 # --- routes -----------------------------------------------------------------
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(config.WEB_DIR / "index.html")
+
+
+@app.get("/pilot")
+async def pilot_page() -> FileResponse:
+    return FileResponse(config.WEB_DIR / "pilot.html")
 
 
 @app.get("/api/health")
@@ -632,6 +665,245 @@ async def run_status(job_id: str, request: Request) -> dict:
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
     return {**job.summary(), "results": job.results}
+
+
+# --- identity pilot API -----------------------------------------------------
+@app.get("/api/pilot/config")
+async def pilot_config(request: Request) -> dict:
+    store = pilot_prompts.load_store()
+    prompts = pilot_prompts.current_prompts(store)
+    current = next(
+        (v for v in store.get("versions", []) if v.get("version") == store.get("current")),
+        None,
+    )
+    return {
+        "prompts": prompts,
+        "prompt_revision": pilot_prompts.prompt_revision(store),
+        "prompt_version": (current or {}).get("version", 1),
+        "prompt_version_comment": (current or {}).get("comment", ""),
+        "prompt_versions": pilot_prompts.prompt_summaries(store),
+        "last_model": store.get("last_model"),
+        "last_steps": store.get("last_steps", config.PILOT_DEFAULT_STEPS),
+        "last_top_k": store.get("last_top_k", config.PILOT_DEFAULT_TOP_K),
+        "memory": pilot_memory.memory_stats(),
+        "agent": config.AGENT_NAME,
+        "directory": str(config.BASE_DIR),
+    }
+
+
+@app.post("/api/pilot/prompts")
+async def save_pilot_prompts(payload: PilotPromptPayload) -> dict:
+    if payload.base_revision and payload.base_revision != pilot_prompts.prompt_revision():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pilot prompts changed on the server since this page loaded. "
+                "Reload pilot prompts, then save again."
+            ),
+        )
+    pilot_prompts.ensure_current_snapshot()
+    current = pilot_prompts.current_prompts()
+    seed_prompt = (
+        payload.seed_prompt
+        if payload.seed_prompt is not None
+        else current["seed_prompt"]
+    )
+    step_prompt = (
+        payload.step_prompt
+        if payload.step_prompt is not None
+        else current["step_prompt"]
+    )
+    extract_prompt = (
+        payload.extract_prompt
+        if payload.extract_prompt is not None
+        else current["extract_prompt"]
+    )
+    try:
+        record, changed = pilot_prompts.save_prompts(
+            seed_prompt,
+            step_prompt,
+            extract_prompt,
+            payload.prompt_comment or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store = pilot_prompts.load_store()
+    return {
+        "ok": True,
+        "changed": changed,
+        "prompt_revision": pilot_prompts.prompt_revision(store),
+        "prompt_version": record["version"],
+        "prompt_version_comment": record.get("comment", ""),
+        "prompt_versions": pilot_prompts.prompt_summaries(store),
+        "prompts": pilot_prompts.current_prompts(store),
+    }
+
+
+@app.get("/api/pilot/prompts/versions/{version}")
+async def get_pilot_prompt_version(version: int) -> dict:
+    record = pilot_prompts.get_version(version)
+    if not record:
+        raise HTTPException(status_code=404, detail="pilot prompt version not found")
+    store = pilot_prompts.load_store()
+    return {
+        "version": record["version"],
+        "created": record.get("created", ""),
+        "comment": record.get("comment", ""),
+        "revision": record.get("revision", ""),
+        "seed_prompt": record.get("seed_prompt", ""),
+        "step_prompt": record.get("step_prompt", ""),
+        "extract_prompt": record.get("extract_prompt", ""),
+        "current": record["version"] == store.get("current"),
+    }
+
+
+@app.post("/api/pilot/run")
+async def start_pilot_run(payload: PilotRunPayload, request: Request) -> dict:
+    if payload.base_revision and payload.base_revision != pilot_prompts.prompt_revision():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pilot prompts changed on the server since this page loaded. "
+                "Reload the page before starting a run."
+            ),
+        )
+    store = pilot_prompts.load_store()
+    prompts = pilot_prompts.current_prompts(store)
+    current = next(
+        (v for v in store.get("versions", []) if v.get("version") == store.get("current")),
+        None,
+    )
+    pilot_prompts.save_preferences(
+        last_model=payload.model,
+        last_steps=payload.steps,
+        last_top_k=payload.top_k,
+    )
+    job = request.app.state.pilots.start(
+        directory=str(config.BASE_DIR),
+        agent=config.AGENT_NAME,
+        model=payload.model,
+        question=payload.question.strip(),
+        total_steps=payload.steps,
+        top_k=payload.top_k,
+        prompts=prompts,
+        out_path=new_pilot_output_path(),
+        prompt_version=(current or {}).get("version", 1),
+        prompt_revision=pilot_prompts.prompt_revision(store),
+        prompt_comment=(current or {}).get("comment", ""),
+    )
+    return {
+        "job": job.summary(),
+        "prompt_revision": pilot_prompts.prompt_revision(store),
+        "prompt_version": (current or {}).get("version", 1),
+    }
+
+
+@app.get("/api/pilot/run/{job_id}/events")
+async def pilot_run_events(job_id: str, request: Request) -> StreamingResponse:
+    job = request.app.state.pilots.jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="pilot job not found")
+    return StreamingResponse(
+        _sse(job),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/pilot/run/{job_id}/stop")
+async def stop_pilot_run(job_id: str, request: Request) -> dict:
+    await request.app.state.pilots.stop(job_id)
+    return {"ok": True}
+
+
+@app.get("/api/pilot/run/{job_id}")
+async def pilot_run_status(job_id: str, request: Request) -> dict:
+    job = request.app.state.pilots.jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="pilot job not found")
+    return {
+        **job.summary(),
+        "steps": job.trajectory,
+        "result": job.result,
+    }
+
+
+@app.get("/api/pilot/memory")
+async def pilot_memory_list(limit: int = 100, q: str = "") -> dict:
+    return {
+        "stats": pilot_memory.memory_stats(),
+        "records": pilot_memory.list_memory(limit=limit, query=q),
+    }
+
+
+@app.post("/api/pilot/memory/seed")
+async def pilot_memory_seed() -> dict:
+    result = await asyncio.to_thread(pilot_memory.seed_from_existing)
+    return result
+
+
+@app.delete("/api/pilot/memory")
+async def pilot_memory_clear() -> dict:
+    await asyncio.to_thread(pilot_memory.clear_memory)
+    return {"ok": True, "stats": pilot_memory.memory_stats()}
+
+
+@app.get("/api/pilot/memory/download")
+async def pilot_memory_download() -> FileResponse:
+    if not config.PILOT_MEMORY_FILE.exists():
+        raise HTTPException(status_code=404, detail="pilot memory file not found")
+    return FileResponse(
+        config.PILOT_MEMORY_FILE,
+        media_type="application/x-ndjson",
+        filename="pilot-constructs.jsonl",
+    )
+
+
+@app.get("/api/pilot/runs")
+async def pilot_runs() -> dict:
+    runs = []
+    for path in sorted(
+        config.PILOT_RUNS_DIR.glob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    ):
+        stat = path.stat()
+        runs.append({"name": path.name, "size": stat.st_size, "mtime": stat.st_mtime})
+    return {"runs": runs, "directory": str(config.PILOT_RUNS_DIR)}
+
+
+@app.get("/api/pilot/runs/{name}")
+async def get_pilot_run(name: str) -> dict:
+    safe = Path(name).name
+    path = config.PILOT_RUNS_DIR / safe
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="pilot run file not found")
+    text = path.read_text(encoding="utf-8")
+    records = [parse_json_object(line) for line in text.splitlines() if line.strip()]
+    return {"name": safe, "records": records, "raw": text}
+
+
+@app.get("/api/pilot/runs/{name}/download")
+async def download_pilot_run(name: str) -> FileResponse:
+    safe = Path(name).name
+    path = config.PILOT_RUNS_DIR / safe
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="pilot run file not found")
+    return FileResponse(
+        path,
+        media_type="application/x-ndjson",
+        filename=safe,
+    )
+
+
+@app.delete("/api/pilot/runs/{name}")
+async def delete_pilot_run(name: str) -> dict:
+    safe = Path(name).name
+    path = config.PILOT_RUNS_DIR / safe
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="pilot run file not found")
+    path.unlink()
+    return {"ok": True}
 
 
 @app.get("/api/runs")

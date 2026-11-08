@@ -11,6 +11,35 @@ records**, optionally grounded with the **BaryGraph** MCP tools.
   as a line to a single `.jsonl` file.
 - Watch the **thinking**, live tool calls, and output; browse past runs.
 
+## Identity Pilot
+
+`/pilot` is a separate experimental page for a memory-driven thought trajectory.
+It does not change the normal Memory Builder run flow.
+
+For each pilot step the app:
+
+1. asks the model to continue an open-ended thought in prose;
+2. asks the model to extract 1–2 triad constructs from that thought;
+3. searches the accumulated construct memory by word overlap;
+4. injects the best matches into the next step as the model's own prior memory;
+5. repeats for the configured number of steps.
+
+Pilot constructs are stored in `output/pilot/constructs.jsonl`. On first
+startup the app seeds that file from construct-shaped records already present in
+`output/examples.jsonl` and `output/runs/*.jsonl`, so the pilot does not start
+from a completely empty memory. Pilot results go to `output/pilot/runs/` and
+pilot prompt versions live in `.state/pilot_prompts.json`.
+
+The pilot maintains a short novelty window: a triad that was just produced or
+retrieved is not re-injected for the next few steps. Without that guard the
+same high-scoring construct can become a self-reinforcing fixed point. Retrieval
+also drops weak matches below a score floor and keeps at most one hit per source
+run, so a single noisy run cannot fill every memory slot.
+
+The pilot is intentionally simple: retrieval is word overlap, not embeddings or
+BaryGraph vector search. Treat it as a test harness for trajectory changes and
+construct memory, not as a finished identity model.
+
 ## Architecture
 
 ```
@@ -56,6 +85,14 @@ Environment variables:
 | `MEMORY_BUILDER_CYCLE_RETRIES` | `2` | Automatic retries on rate-limit/quota errors |
 | `MEMORY_BUILDER_FIRST_EVENT_TIMEOUT` | `300` | Fail a cycle early if the provider sends nothing at all |
 | `MEMORY_BUILDER_FIRST_EVENT_NOTICE` | `20` | Show a "waiting for provider" hint after this many seconds |
+| `MEMORY_BUILDER_PILOT_STEPS` | `12` | Default number of identity-pilot steps |
+| `MEMORY_BUILDER_PILOT_TOP_K` | `3` | Default number of memory hits injected per pilot step |
+| `MEMORY_BUILDER_PILOT_STEP_TIMEOUT` | `240` | Per-turn timeout for a pilot think/extract call |
+| `MEMORY_BUILDER_PILOT_FIRST_EVENT_TIMEOUT` | `180` | Fail a pilot turn early if the provider sends nothing |
+| `MEMORY_BUILDER_PILOT_TURN_RETRIES` | `1` | Retries for rate-limited pilot turns |
+| `MEMORY_BUILDER_PILOT_EXCLUDE_WINDOW` | `3` | Steps before a used triad can be re-injected |
+| `MEMORY_BUILDER_PILOT_MIN_SCORE` | `0.12` | Minimum word-overlap score for a memory hit |
+| `MEMORY_BUILDER_PILOT_MIN_SHARED` | `2` | Minimum shared terms before a memory hit is injected |
 | `MEMORY_BUILDER_LOG` | `INFO` | `DEBUG` for event-level logs |
 
 The BaryGraph MCP server is declared in `opencode.json`. To switch to the local
@@ -96,16 +133,21 @@ hidden.
 
 ## Files
 
-- `app/` – FastAPI backend (`main.py`, `opencode.py`, `runner.py`, `config.py`)
-- `web/` – static UI (`index.html`, `app.js`, `styles.css`)
+- `app/` – FastAPI backend (`main.py`, `opencode.py`, `runner.py`, `pilot.py`,
+  `pilot_memory.py`, `pilot_prompts.py`, `config.py`)
+- `web/` – static UI (`index.html`, `app.js`, `styles.css`, plus the separate
+  `pilot.html`, `pilot.js`, `pilot.css` identity-pilot page)
 - `AGENTS.md` – project guide for coding agents: idea, architecture, invariants,
   and safe change workflow
 - `.opencode/agents/memory-builder.md` – the custom agent; its body is the
   editable system prompt (written by the app)
 - `.state/` – run metadata, job records, prompts/settings, prompt version
-  history (`prompt_versions.json`), server log
+  history (`prompt_versions.json`), pilot prompts (`pilot_prompts.json`),
+  server log
 - `output/runs/` – generated JSONL result files (deletable from the UI)
 - `output/examples.jsonl` – curated records you marked with ☆ Example
+- `output/pilot/runs/` – identity-pilot trajectory records
+- `output/pilot/constructs.jsonl` – accumulated pilot construct memory
 
 ## Output
 

@@ -68,11 +68,17 @@ OpenCode
 | --- | --- |
 | `app/main.py` | FastAPI app, routes, prompt/agent persistence, prompt versions, lifespan, startup/shutdown. |
 | `app/runner.py` | `Job`, `JobManager`, per-cycle orchestration, retries, timeouts, SSE event routing, JSONL writing. |
+| `app/pilot.py` | `PilotJob`, `PilotManager`, identity-pilot think/extract/retrieve loop, pilot SSE events, pilot JSONL writing. |
+| `app/pilot_memory.py` | Append-only pilot construct memory, word-overlap retrieval, seeding from existing runs/examples. |
+| `app/pilot_prompts.py` | Separate pilot prompt store and version snapshots in `.state/pilot_prompts.json`. |
 | `app/opencode.py` | Manages the private `opencode serve` child process and wraps its HTTP/SSE API. |
-| `app/config.py` | Filesystem paths, environment variables, model filtering. |
-| `web/index.html` | Two-row top bar, prompt drawer, tabbed workspace, result panes. |
+| `app/config.py` | Filesystem paths, environment variables, model filtering, pilot paths/timeouts. |
+| `web/index.html` | Two-row top bar, prompt drawer, tabbed workspace, result panes, pilot link. |
 | `web/app.js` | UI state, API calls, SSE handlers, prompt versions, auto-scroll, history isolation. |
 | `web/styles.css` | Layout, sticky tab bar, drawer, panes, history banner, badges, toasts. |
+| `web/pilot.html` | Separate identity-pilot page at `/pilot`. |
+| `web/pilot.js` | Pilot model picker, prompt drawer, live step timeline, memory panel, pilot runs. |
+| `web/pilot.css` | Standalone styling for the pilot page. |
 | `.opencode/agents/memory-builder.md` | Custom agent definition. Its body is the editable system prompt. |
 | `opencode.json` | Declares the BaryGraph MCP server to OpenCode. |
 | `prompts-examples/default.md` | Example prompt material; not runtime state. |
@@ -88,11 +94,15 @@ OpenCode
 3. `write_agent(read_agent_system() or DEFAULT_SYSTEM_PROMPT)` — normalizes the
    agent file and its frontmatter.
 4. `ensure_prompt_version()` — creates or validates `.state/prompt_versions.json`.
-5. `OpenCodeServer.start()` — starts `opencode serve`, captures the Basic-auth
+5. `pilot_prompts.ensure_current_snapshot()` — validates the separate pilot
+   prompt store.
+6. `pilot_memory.seed_from_existing()` — imports construct-shaped records from
+   examples and existing runs into `output/pilot/constructs.jsonl` when missing.
+7. `OpenCodeServer.start()` — starts `opencode serve`, captures the Basic-auth
    password from `.state/opencode-serve.log`, and waits for health.
-6. Waits up to ~30s for the `barygraph` MCP server to report `connected` so the
+8. Waits up to ~30s for the `barygraph` MCP server to report `connected` so the
    first run has tools available.
-7. Stores `server`, `client`, and `jobs` on `app.state`.
+9. Stores `server`, `client`, `jobs`, and `pilots` on `app.state`.
 
 On shutdown it closes the HTTP client and terminates the OpenCode child process.
 
@@ -249,6 +259,27 @@ Start is blocked and the drawer opens with the comment field focused.
 | `POST` | `/api/examples` | Add a record to examples (deduplicated by canonical JSON). |
 | `DELETE` | `/api/examples/{index}` | Delete an example by index. |
 
+Identity-pilot routes are separate:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/pilot` | Pilot page. |
+| `GET` | `/api/pilot/config` | Pilot prompts, versions, preferences, memory stats. |
+| `POST` | `/api/pilot/prompts` | Save pilot prompts with revision guard/comment. |
+| `GET` | `/api/pilot/prompts/versions/{version}` | One pilot prompt snapshot. |
+| `POST` | `/api/pilot/run` | Start a pilot trajectory. |
+| `GET` | `/api/pilot/run/{job_id}/events` | Pilot SSE stream. |
+| `POST` | `/api/pilot/run/{job_id}/stop` | Stop the current pilot turn/job. |
+| `GET` | `/api/pilot/run/{job_id}` | Pilot summary + steps + result. |
+| `GET` | `/api/pilot/memory` | List/filter construct memory. |
+| `POST` | `/api/pilot/memory/seed` | Import constructs from examples/runs. |
+| `DELETE` | `/api/pilot/memory` | Clear construct memory. |
+| `GET` | `/api/pilot/memory/download` | Download memory JSONL. |
+| `GET` | `/api/pilot/runs` | List pilot result files. |
+| `GET` | `/api/pilot/runs/{name}` | Parse one pilot result file. |
+| `GET` | `/api/pilot/runs/{name}/download` | Download a pilot result file. |
+| `DELETE` | `/api/pilot/runs/{name}` | Delete a pilot result file. |
+
 All prompt and run payloads are JSON. The UI uses a small `api()` helper that
 turns non-2xx responses into errors with status codes.
 
@@ -258,11 +289,15 @@ turns non-2xx responses into errors with status codes.
 .state/
   prompts.json               current run prompt + last model
   prompt_versions.json       full prompt snapshots + comments
+  pilot_prompts.json         pilot prompts + separate version snapshots
+  pilot_jobs/<job>.json      pilot summary + step trajectory/result
   opencode-serve.log         private OpenCode server log/password
   jobs/<job>.json            job summary + per-cycle reasoning/tools/results
 output/
   examples.jsonl             curated examples
   runs/<timestamp>.jsonl     generated run records
+  pilot/runs/<timestamp>.jsonl   identity-pilot trajectory records
+  pilot/constructs.jsonl     append-only pilot construct memory
 ```
 
 `.state/` and `output/` are ignored by git. Do not commit them. `.state/` can
@@ -345,6 +380,13 @@ Known operational issues on this machine:
 - UI assets are cache-busted with `?v=14`. After changing `web/app.js` or
   `web/styles.css`, bump the version in `web/index.html` so a stale tab cannot
   keep old behavior.
+- The identity pilot is a separate page (`/pilot`) with its own
+  `pilot.html` / `pilot.js` / `pilot.css` and its own cache-busting versions. It
+  must not import main-page state assumptions or alter `#results` /
+  `#history-results`.
+- Pilot live steps use `step.started`, `step.thought`, `step.constructs`,
+  `step.memory`, and `step.completed`. Do not collapse them into the main
+  cycle event names.
 - Preserve the existing plain HTML/CSS/JS approach. There is no frontend build
   step or framework.
 
@@ -389,8 +431,10 @@ Before finishing a change:
 - Keep the system prompt / run prompt distinction intact.
 - Keep prompt provenance on new records and job state.
 - Preserve live/historical result isolation and auto-scroll behavior.
+- Keep pilot output and pilot memory separate from normal run output.
 - Bump the UI asset version after changing JS/CSS.
-- Run `python3 -m py_compile app/*.py` and `node --check web/app.js`.
+- Run `python3 -m py_compile app/*.py`, `node --check web/app.js`, and
+  `node --check web/pilot.js`.
 - Exercise affected API endpoints with `curl` or the UI.
 - Update `README.md` for user-visible behavior changes.
 - Do not commit `.state/`, `output/`, `__pycache__/`, `.venv/`, or `.env`.
@@ -406,3 +450,15 @@ Before finishing a change:
   Basic auth, no multi-user isolation, and no database.
 - BaryGraph availability and free-model reliability are external dependencies;
   failures are surfaced as `_error` records rather than hidden.
+- Pilot memory retrieval is word overlap, not embeddings; near-synonyms are
+  missed unless they share a normalized token. The memory file can contain
+  imported BaryGraph constructs from older runs, so hits may be noisy.
+- Pilot memory has a short novelty window (`PILOT_MEMORY_EXCLUDE_WINDOW`) so a
+  just-used triad is not immediately re-injected. Without it, high-scoring
+  constructs can collapse the trajectory into a fixed point. Retrieval also
+  applies `PILOT_MEMORY_MIN_SCORE` and `PILOT_MEMORY_MIN_SHARED`, and returns at
+  most one hit per source run. The novelty key is the triad's term sets, so
+  changing only the tension does not bypass the window.
+- Pilot think steps use the same agent/system prompt as the normal extractor;
+  stage prompts explicitly ask for prose, but a very rigid model can still try
+  to emit JSON early.

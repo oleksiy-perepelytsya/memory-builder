@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Memory Builder — Identity Pilot</title>
+<link rel="stylesheet" href="/static/pilot.css?v=2" />
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-row topbar-identity">
+    <div class="brand">
+      <h1>Identity Pilot</h1>
+      <span class="subtitle">think → extract triads → recall → continue</span>
+    </div>
+    <div class="status">
+      <span id="pill-opencode" class="pill">opencode: …</span>
+      <span id="pill-barygraph" class="pill">barygraph: …</span>
+      <a class="button-link" href="/">← Memory Builder</a>
+    </div>
+  </div>
+  <div class="topbar-row topbar-form">
+    <div class="menu">
+      <button id="toggle-prompts" class="secondary" type="button" title="Edit pilot prompts">☰ Prompts</button>
+      <label class="field inline">
+        <span>Model</span>
+        <select id="model"></select>
+      </label>
+      <label class="field inline">
+        <span>Effort</span>
+        <select id="variant"></select>
+      </label>
+      <label class="field inline">
+        <span>Steps</span>
+        <input id="steps" type="number" min="2" max="50" value="12" />
+      </label>
+      <label class="field inline">
+        <span>Hits / step</span>
+        <input id="top-k" type="number" min="1" max="10" value="3" />
+      </label>
+      <div class="menu-actions">
+        <button id="start" class="primary" type="button">Start pilot</button>
+        <button id="stop" class="danger" type="button" disabled>Stop</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div id="drawer-backdrop" class="drawer-backdrop"></div>
+<aside id="prompts-drawer" class="prompts-drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>Pilot prompts</h2>
+    <button id="close-prompts" class="secondary small" type="button" title="Close">✕</button>
+  </div>
+  <div class="version-box">
+    <label class="field">
+      <span>Prompt version</span>
+      <select id="prompt-version"></select>
+    </label>
+    <div id="version-meta" class="muted small-note"></div>
+  </div>
+  <label class="field">
+    <span>Seed prompt <em>(step 1; use <code>{{QUESTION}}</code>)</em></span>
+    <textarea id="seed-prompt" rows="12" spellcheck="false"></textarea>
+  </label>
+  <label class="field">
+    <span>Continuation prompt <em>(steps 2+; injects memory hits)</em></span>
+    <textarea id="step-prompt" rows="18" spellcheck="false"></textarea>
+  </label>
+  <label class="field">
+    <span>Construct extraction prompt <em>(thought text → triads)</em></span>
+    <textarea id="extract-prompt" rows="18" spellcheck="false"></textarea>
+  </label>
+  <label class="field">
+    <span>Version comment <em>(required when prompts change)</em></span>
+    <input id="prompt-comment" type="text" maxlength="200" placeholder="e.g. Tightened triad extraction rules" />
+  </label>
+  <div class="actions">
+    <button id="save" class="secondary" type="button">Save prompts</button>
+    <button id="reload" class="secondary" type="button">Reload</button>
+  </div>
+  <div class="muted small-note">
+    Pilot prompts are stored separately in <code>.state/pilot_prompts.json</code>.
+  </div>
+</aside>
+
+<main>
+  <section class="panel question-panel">
+    <label class="field">
+      <span>General question / frame <em>(open-ended on purpose)</em></span>
+      <textarea id="question" rows="4">What is identity when a system can remember its own formulations?</textarea>
+    </label>
+    <div class="run-line">
+      <span id="run-state" class="muted">No pilot running.</span>
+      <span id="run-meta" class="muted"></span>
+    </div>
+  </section>
+
+  <div class="pilot-grid">
+    <section class="panel trajectory-panel">
+      <div class="panel-head">
+        <h2>Trajectory</h2>
+        <span id="trajectory-meta" class="muted"></span>
+      </div>
+      <div id="trajectory" class="trajectory">
+        <div class="empty-state">Start a pilot to begin the trajectory.</div>
+      </div>
+    </section>
+
+    <section class="panel memory-panel">
+      <div class="panel-head">
+        <h2>Construct memory</h2>
+        <span id="memory-count" class="muted">0 constructs</span>
+      </div>
+      <div class="memory-actions">
+        <button id="seed-memory" class="secondary small" type="button">Seed from existing runs</button>
+        <button id="clear-memory" class="danger small" type="button">Clear</button>
+        <a id="download-memory" class="button-link small" href="/api/pilot/memory/download">Download</a>
+      </div>
+      <input id="memory-search" class="memory-search" type="text" placeholder="Filter memory by word…" />
+      <div id="memory-list" class="memory-list">
+        <div class="empty-state">No constructs loaded.</div>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel runs-panel">
+    <div class="panel-head">
+      <h2>Previous pilot runs</h2>
+      <button id="refresh-runs" class="secondary small" type="button">Refresh</button>
+    </div>
+    <div id="pilot-runs" class="runs-list">
+      <div class="empty-state">No pilot runs yet.</div>
+    </div>
+  </section>
+</main>
+
+<div id="toasts" class="toasts"></div>
+<script src="/static/pilot.js?v=4"></script>
+</body>
+</html>

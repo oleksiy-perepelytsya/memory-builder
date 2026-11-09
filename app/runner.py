@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from . import config
@@ -161,6 +162,11 @@ class Job:
     prompt_version: int = 0
     prompt_revision: str = ""
     prompt_comment: str = ""
+    # Resume support: a continuation starts at `start_cycle` and counts the
+    # records already present in the file so progress stays meaningful.
+    start_cycle: int = 1
+    completed_before: int = 0
+    resume_of: Optional[str] = None
     status: str = "pending"
     error: Optional[str] = None
     created: float = field(default_factory=time.time)
@@ -180,7 +186,10 @@ class Job:
             "id": self.id,
             "status": self.status,
             "cycles": self.cycles,
-            "completed": len(self.results),
+            "start_cycle": self.start_cycle,
+            "completed": self.completed_before + len(self.results),
+            "new_records": len(self.results),
+            "resume_of": self.resume_of,
             "model": self.model,
             "agent": self.agent,
             "out_path": self.out_path,
@@ -209,6 +218,9 @@ class JobManager:
         prompt_version: int,
         prompt_revision: str,
         prompt_comment: str,
+        start_cycle: int = 1,
+        completed_before: int = 0,
+        resume_of: Optional[str] = None,
     ) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
@@ -222,6 +234,9 @@ class JobManager:
             prompt_version=prompt_version,
             prompt_revision=prompt_revision,
             prompt_comment=prompt_comment,
+            start_cycle=start_cycle,
+            completed_before=completed_before,
+            resume_of=resume_of,
         )
         self.jobs[job.id] = job
         job.task = asyncio.create_task(self._run(job))
@@ -244,11 +259,12 @@ class JobManager:
     async def _run(self, job: Job) -> None:
         job.status = "running"
         await self.client.reload_location(job.directory)
+        self._write_meta(job)
         await self._emit(job, "job.started", {"job": job.summary()})
         listener = asyncio.create_task(self._listen(job))
         try:
             with open(job.out_path, "a", encoding="utf-8") as out_file:
-                for cycle in range(1, job.cycles + 1):
+                for cycle in range(job.start_cycle, job.cycles + 1):
                     if job.stop_requested:
                         break
                     await self._run_cycle(job, cycle, out_file)
@@ -260,6 +276,7 @@ class JobManager:
             listener.cancel()
             if job.status == "running":
                 job.status = "stopped" if job.stop_requested else "completed"
+            self._write_meta(job)
             self._write_state(job)
             await self._emit(
                 job,
@@ -356,6 +373,7 @@ class JobManager:
             "attempts": attempt,
         }
         job.results.append(result)
+        self._write_meta(job)
         await self._emit(job, "cycle.completed", result)
 
     async def _attempt(self, job: Job, cycle: int):
@@ -478,7 +496,7 @@ class JobManager:
         for result in reversed(job.results):
             if result.get("session_id") == session_id:
                 return result["cycle"]
-        return len(job.results) + 1
+        return job.start_cycle + len(job.results)
 
     def _write_state(self, job: Job) -> None:
         try:
@@ -492,6 +510,9 @@ class JobManager:
                         "model": job.model,
                         "agent": job.agent,
                         "cycles": job.cycles,
+                        "start_cycle": job.start_cycle,
+                        "completed_before": job.completed_before,
+                        "resume_of": job.resume_of,
                         "out_path": job.out_path,
                         "prompt_version": job.prompt_version,
                         "prompt_revision": job.prompt_revision,
@@ -505,6 +526,39 @@ class JobManager:
             )
         except OSError as exc:
             log.warning("could not write job state: %s", exc)
+
+    def _write_meta(self, job: Job) -> None:
+        """Write the small per-run manifest used by the Continue button."""
+        try:
+            config.RUN_META_DIR.mkdir(parents=True, exist_ok=True)
+            path = config.RUN_META_DIR / f"{Path(job.out_path).stem}.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "job_id": job.id,
+                        "status": job.status,
+                        "cycles": job.cycles,
+                        "start_cycle": job.start_cycle,
+                        "completed": job.completed_before + len(job.results),
+                        "out_name": Path(job.out_path).name,
+                        "out_path": job.out_path,
+                        "model": job.model,
+                        "agent": job.agent,
+                        "prompt_version": job.prompt_version,
+                        "prompt_revision": job.prompt_revision,
+                        "prompt_comment": job.prompt_comment,
+                        "resume_of": job.resume_of,
+                        "error": job.error,
+                        "created": job.created,
+                        "updated": time.time(),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            log.warning("could not write run meta: %s", exc)
 
 
 def new_output_path() -> str:

@@ -857,6 +857,14 @@ async function loadRuns() {
       const size = document.createElement("span");
       size.className = "muted";
       size.textContent = `${(r.size / 1024).toFixed(1)} KiB`;
+      const progress = document.createElement("span");
+      progress.className = "muted";
+      const recordCount = Number.isFinite(r.records) ? r.records : null;
+      if (recordCount !== null) {
+        progress.textContent = r.cycles
+          ? `${recordCount}/${r.cycles} cycles`
+          : `${recordCount} record${recordCount === 1 ? "" : "s"}`;
+      }
       const dl = document.createElement("a");
       dl.className = "download";
       dl.textContent = "Download";
@@ -868,7 +876,17 @@ async function loadRuns() {
       del.textContent = "Delete";
       del.title = `Delete ${r.name}`;
       del.onclick = () => deleteRun(r.name);
-      div.append(a, size, dl, del);
+      div.append(a, size, progress);
+      if (r.resumable) {
+        const cont = document.createElement("button");
+        cont.textContent = "Continue";
+        cont.title = r.cycles
+          ? `Resume from cycle ${r.records + 1} to ${r.cycles}`
+          : `Resume from cycle ${r.records + 1}`;
+        cont.onclick = () => continueRun(r);
+        div.appendChild(cont);
+      }
+      div.append(dl, del);
       box.appendChild(div);
     }
   } catch (e) {
@@ -885,6 +903,57 @@ async function deleteRun(name) {
     loadRuns();
   } catch (e) {
     notify("Could not delete run: " + e.message, "bad");
+  }
+}
+
+async function continueRun(run) {
+  const records = Number(run.records) || 0;
+  const fromInput = parseInt($("cycles").value, 10) || 1;
+  const suggested = run.cycles && run.cycles > records ? run.cycles : records + fromInput;
+  const answer = window.prompt(
+    `Continue ${run.name} from cycle ${records + 1}.\nTarget total cycles:`,
+    String(suggested)
+  );
+  if (answer === null) return;
+  const target = parseInt(answer, 10);
+  if (!target || target <= records) {
+    notify(`Target must be greater than ${records}.`, "bad");
+    return;
+  }
+  let model = run.model && run.model.id ? run.model : null;
+  if (!model) {
+    const opt = $("model").selectedOptions[0];
+    if (!opt || !opt.value.includes("\u0000")) return notify("No model selected", "bad");
+    const [providerID, id] = opt.value.split("\u0000");
+    model = { providerID, id, variant: $("variant").value || null };
+  }
+  showLiveResults();
+  $("live").innerHTML = "";
+  $("results").innerHTML = "";
+  cycles.clear();
+  setRunning(true);
+  try {
+    const res = await api(`/api/runs/${encodeURIComponent(run.name)}/continue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, cycles: target, base_revision: promptRevision }),
+    });
+    promptRevision = res.prompt_revision || promptRevision;
+    const { job } = res;
+    currentJob = job.id;
+    $("file-info").textContent = job.prompt_version
+      ? `${job.out_path} · prompt v${job.prompt_version}`
+      : job.out_path;
+    $("run-state").textContent = `job ${job.id} (continuing)`;
+    subscribe(job.id);
+    activateTab("live");
+  } catch (e) {
+    setRunning(false);
+    if (e.status === 409) {
+      notify("Prompts changed on the server. Reload the page before continuing.", "bad");
+    } else {
+      notify("Could not continue: " + e.message, "bad");
+    }
   }
 }
 

@@ -17,6 +17,9 @@ RUNS_DIR = OUTPUT_DIR / "runs"
 EXAMPLES_FILE = OUTPUT_DIR / "examples.jsonl"
 STATE_DIR = BASE_DIR / ".state"
 JOBS_DIR = STATE_DIR / "jobs"
+# Lightweight per-run manifests (planned cycles, status, model) so an
+# interrupted run can be resumed without parsing the full job state files.
+RUN_META_DIR = STATE_DIR / "run_meta"
 
 # --- Identity pilot ---------------------------------------------------------
 # The pilot has its own output tree and construct memory so it cannot disturb
@@ -102,6 +105,7 @@ def ensure_dirs() -> None:
         RUNS_DIR,
         STATE_DIR,
         JOBS_DIR,
+        RUN_META_DIR,
         AGENT_DIR,
         PILOT_DIR,
         PILOT_RUNS_DIR,

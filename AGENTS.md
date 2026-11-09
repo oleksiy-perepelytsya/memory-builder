@@ -29,6 +29,8 @@ These are the rules the rest of the system is built around:
    and appends one JSON value to the same `.jsonl` file.
 2. **Append-only output.** A run file is opened once and records are appended;
    failed cycles are written as `_error` records instead of being skipped.
+   Continuing an interrupted run reopens the same file in append mode, so
+   existing records are never rewritten.
 3. **Saved prompts only.** A run uses the current saved prompt version. Unsaved
    editor changes must be saved with a comment before Start is allowed.
 4. **Every new record carries prompt provenance.** Each dict record is stamped
@@ -153,6 +155,20 @@ Dict records (including error records) also receive the prompt provenance
 fields. A non-dict model output cannot carry object fields; that edge case is
 accepted.
 
+### Continuing an interrupted run
+
+Each job also writes a small manifest to `.state/run_meta/<run-stem>.json`
+(planned `cycles`, `start_cycle`, completed count, model, status). The
+**Previous runs** list exposes `POST /api/runs/{name}/continue` as a
+**Continue** button when a run has fewer records than its planned cycle count,
+or when the target is unknown and its last record is an `_error`.
+
+Continuing reopens the same `.jsonl` in append mode and starts a new job at
+`start_cycle = records + 1`, so earlier records are untouched and the file keeps
+its name. The job uses the saved prompt set and stamps new records with the
+current prompt version. `backfill_run_meta()` creates manifests for runs that
+predate this feature from their `.state/jobs/<job>.json` entries.
+
 ### Live events
 
 OpenCode SSE events are translated into app-level events:
@@ -250,8 +266,9 @@ Start is blocked and the drawer opens with the comment field focused.
 | `GET` | `/api/run/{job_id}/events` | SSE stream for one job. |
 | `POST` | `/api/run/{job_id}/stop` | Request a stop and abort the current session. |
 | `GET` | `/api/run/{job_id}` | Job summary plus completed results. |
-| `GET` | `/api/runs` | List files in `output/runs/`. |
+| `GET` | `/api/runs` | List files in `output/runs/` with record counts and resumability. |
 | `GET` | `/api/runs/{name}` | Parse and return one run file. |
+| `POST` | `/api/runs/{name}/continue` | Append the remaining cycles to an interrupted run. |
 | `GET` | `/api/runs/{name}/download` | Download a run file. |
 | `DELETE` | `/api/runs/{name}` | Delete a run file. |
 | `GET` | `/api/examples` | List curated examples. |
@@ -293,6 +310,7 @@ turns non-2xx responses into errors with status codes.
   pilot_jobs/<job>.json      pilot summary + step trajectory/result
   opencode-serve.log         private OpenCode server log/password
   jobs/<job>.json            job summary + per-cycle reasoning/tools/results
+  run_meta/<run>.json        lightweight manifest for resuming an interrupted run
 output/
   examples.jsonl             curated examples
   runs/<timestamp>.jsonl     generated run records

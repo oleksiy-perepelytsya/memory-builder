@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -317,6 +318,7 @@ def read_examples() -> list[dict]:
 async def lifespan(app: FastAPI):
     config.ensure_dirs()
     migrate_legacy_runs()
+    backfill_run_meta()
     write_agent(read_agent_system() or DEFAULT_SYSTEM_PROMPT)
     ensure_prompt_version()
     pilot_prompts.ensure_current_snapshot()
@@ -384,6 +386,12 @@ class RunPayload(BaseModel):
     system_prompt: Optional[str] = None
     run_prompt: Optional[str] = None
     out_name: Optional[str] = None
+    base_revision: Optional[str] = None
+
+
+class ContinuePayload(BaseModel):
+    model: Optional[dict] = None
+    cycles: Optional[int] = Field(default=None, ge=1, le=2000)
     base_revision: Optional[str] = None
 
 
@@ -941,13 +949,208 @@ async def delete_pilot_run(name: str) -> dict:
     return {"ok": True}
 
 
+def backfill_run_meta() -> None:
+    """Create manifests for run files that predate the resume feature.
+
+    Old runs only have the full (and potentially large) job state, so this walks
+    it once at startup and writes a small manifest. A marker records the newest
+    job state already handled, so later startups only inspect new ones.
+    """
+    marker = config.RUN_META_DIR / ".backfill"
+    try:
+        last = float(marker.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        last = 0.0
+    newest = last
+    for path in config.JOBS_DIR.glob("*.json"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= last:
+            continue
+        newest = max(newest, mtime)
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(job, dict):
+            continue
+        cycles = job.get("cycles")
+        out_path = job.get("out_path")
+        if not out_path or not isinstance(cycles, (int, float)) or cycles <= 0:
+            continue
+        run_path = Path(out_path)
+        if not run_path.exists():
+            run_path = config.RUNS_DIR / run_path.name
+        if not run_path.exists():
+            continue
+        meta_path = config.RUN_META_DIR / f"{run_path.stem}.json"
+        if meta_path.exists():
+            continue
+        try:
+            records = [
+                line
+                for line in run_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except OSError:
+            continue
+        payload = {
+            "job_id": job.get("id"),
+            "status": job.get("status"),
+            "cycles": int(cycles),
+            "start_cycle": int(job.get("start_cycle") or 1),
+            "completed": len(records),
+            "out_name": run_path.name,
+            "out_path": str(run_path),
+            "model": job.get("model"),
+            "agent": job.get("agent"),
+            "prompt_version": job.get("prompt_version", 0),
+            "prompt_revision": job.get("prompt_revision", ""),
+            "prompt_comment": job.get("prompt_comment", ""),
+            "resume_of": job.get("resume_of"),
+            "error": job.get("error"),
+            "created": job.get("created"),
+            "updated": time.time(),
+            "backfilled": True,
+        }
+        try:
+            meta_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            continue
+    try:
+        marker.write_text(str(newest), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_run_meta(name: str) -> dict:
+    """Return the lightweight manifest for a run file, if one exists."""
+    path = config.RUN_META_DIR / f"{Path(name).stem}.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _scan_run(path: Path) -> tuple[int, bool]:
+    """Return (record count, whether the last record is an `_error`)."""
+    try:
+        lines = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return 0, False
+    if not lines:
+        return 0, False
+    obj = parse_json_object(lines[-1])
+    return len(lines), bool(isinstance(obj, dict) and obj.get("_error"))
+
+
 @app.get("/api/runs")
-async def list_runs() -> dict:
+async def list_runs(request: Request) -> dict:
+    active_paths = {
+        job.out_path
+        for job in request.app.state.jobs.jobs.values()
+        if job.status == "running"
+    }
     runs = []
     for path in sorted(config.RUNS_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
         stat = path.stat()
-        runs.append({"name": path.name, "size": stat.st_size, "mtime": stat.st_mtime})
+        meta = _read_run_meta(path.name)
+        records, last_error = _scan_run(path)
+        planned = meta.get("cycles")
+        if not isinstance(planned, (int, float)) or planned <= 0:
+            planned = None
+        else:
+            planned = int(planned)
+        active = str(path) in active_paths
+        resumable = (not active) and (
+            (planned is not None and records < planned)
+            or (planned is None and last_error)
+        )
+        runs.append(
+            {
+                "name": path.name,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "records": records,
+                "cycles": planned,
+                "status": meta.get("status"),
+                "model": meta.get("model"),
+                "resumable": resumable,
+            }
+        )
     return {"runs": runs, "directory": str(config.RUNS_DIR)}
+
+
+@app.post("/api/runs/{name}/continue")
+async def continue_run(name: str, payload: ContinuePayload, request: Request) -> dict:
+    safe = Path(name).name
+    if safe == config.EXAMPLES_FILE.name:
+        raise HTTPException(status_code=400, detail="not a run file")
+    path = config.RUNS_DIR / safe
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="run file not found")
+    if payload.base_revision and payload.base_revision != prompt_revision():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Prompts changed on the server since this page loaded. "
+                "Reload the page before continuing a run."
+            ),
+        )
+    for existing in request.app.state.jobs.jobs.values():
+        if existing.status == "running" and existing.out_path == str(path):
+            raise HTTPException(status_code=409, detail="this run is already in progress")
+    meta = _read_run_meta(safe)
+    records, _last_error = _scan_run(path)
+    planned = payload.cycles or meta.get("cycles")
+    if not isinstance(planned, (int, float)) or int(planned) <= records:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This run already has {records} records; choose a target "
+                f"cycle count greater than {records}."
+            ),
+        )
+    planned = int(planned)
+    model = payload.model or meta.get("model")
+    if not isinstance(model, dict) or not model:
+        raise HTTPException(
+            status_code=400,
+            detail="No model recorded for this run; select a model and try again.",
+        )
+    current, _store = ensure_prompt_version()
+    save_settings(last_model=model)
+    job = request.app.state.jobs.start(
+        directory=str(config.BASE_DIR),
+        agent=config.AGENT_NAME,
+        model=model,
+        cycles=planned,
+        start_cycle=records + 1,
+        completed_before=records,
+        resume_of=safe,
+        run_prompt=load_run_prompt(),
+        system_prompt=read_agent_system(),
+        out_path=str(path),
+        prompt_version=current["version"],
+        prompt_revision=current["revision"],
+        prompt_comment=current.get("comment", ""),
+    )
+    return {
+        "job": job.summary(),
+        "prompt_revision": prompt_revision(),
+        "prompt_version": current["version"],
+    }
 
 
 @app.get("/api/runs/{name}")

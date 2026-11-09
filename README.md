@@ -266,6 +266,11 @@ Every output record is stamped with the prompt version that produced it:
 
 - Generated runs go to `output/runs/`. Open one from **Previous runs**, and use
   the **Delete** button there to remove a file.
+- If a run stopped before its target cycle count (connection loss, app restart,
+  or a provider failure), **Previous runs** shows a **Continue** button. It
+  reopens the same file, appends the missing cycles from where it stopped, and
+  keeps the original file name. A small manifest in `.state/run_meta/` records
+  the planned cycle count and model, so this also works after a hard stop.
 - On any parsed record, click **☆ Example** to append it to
   `output/examples.jsonl`. The **Examples** panel lists curated records and lets
   you remove them individually.

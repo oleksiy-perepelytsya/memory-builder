@@ -70,6 +70,87 @@ startup.
 # then open http://127.0.0.1:8765
 ```
 
+## Docker
+
+The app runs in a container with its own private OpenCode server. The
+container uses host networking, so it can reach a BaryGraph running on the
+Docker host (including `127.0.0.1:8000`) without firewall changes, and the
+NVIDIA key is passed as an environment variable.
+
+### Quick start
+
+```sh
+cp .env.example .env   # set NVIDIA_API_KEY
+docker compose up -d --build
+# open http://127.0.0.1:8765
+```
+
+Stop a local `./run.sh` first if it still holds port `8765`.
+
+State is kept under `./docker-data/` on the host:
+
+| Path | Contents |
+| --- | --- |
+| `docker-data/state/` | prompts, prompt versions, job metadata, OpenCode log |
+| `docker-data/output/` | generated runs, examples, and pilot data |
+| volume `memory-builder-agents` | `memory-builder.md` system prompt (seeded from the image) |
+
+### Networking and BaryGraph
+
+Host networking is the default because the host's BaryGraph endpoint
+(`BARYGRAPH_MCP_URL=http://127.0.0.1:8000/mcp`) then works as-is. The
+entrypoint renders `BARYGRAPH_MCP_URL` into the container's `opencode.json` at
+startup. The web UI binds `0.0.0.0:8765` by default; set
+`MEMORY_BUILDER_HOST=127.0.0.1` in `.env` to keep it loopback-only.
+
+If BaryGraph runs in another container or on another machine, keep host
+networking and point `BARYGRAPH_MCP_URL` at its address (for example
+`http://10.0.0.5:8000/mcp`).
+
+Bridge networking also works (for Docker Desktop or network isolation): set
+`BARYGRAPH_MCP_URL=http://host.docker.internal:8000/mcp`, add
+`extra_hosts: ["host.docker.internal:host-gateway"]`, and publish port
+`8765:8765`. On Linux, UFW blocks containers from reaching host services by
+default, so allow the Docker subnet first:
+
+```sh
+sudo ufw allow from 172.16.0.0/12 to any port 8000 proto tcp
+```
+
+### NVIDIA API key
+
+OpenCode's built-in `nvidia` provider reads `NVIDIA_API_KEY` from the
+environment, so the app offers the NVIDIA models listed by the catalog. Keep
+the key in `.env`; it is not baked into the image or committed.
+
+### Multiple loops with separate keys
+
+`docker-compose.multi.yml` starts two independent instances, each with its own
+key, state directory, and web port:
+
+```sh
+# .env
+NVIDIA_API_KEY_1=nvapi-...
+NVIDIA_API_KEY_2=nvapi-...
+MEMORY_BUILDER_WEB_PORT_1=8765
+MEMORY_BUILDER_WEB_PORT_2=8766
+```
+
+```sh
+docker compose -f docker-compose.multi.yml up -d --build
+```
+
+Both instances connect to the same BaryGraph but keep separate OpenCode
+sessions, prompts, memories, and outputs. Copy a service block to add more.
+
+### Notes
+
+- Pin the OpenCode version with `--build-arg OPENCODE_VERSION=2.1.2` when a
+  reproducible image matters.
+- The container runs as root and writes to the bind mounts as root.
+- Set `MEMORY_BUILDER_WEB_PORT` to move the host port without editing the
+  compose file.
+
 ## Configuration
 
 Environment variables:

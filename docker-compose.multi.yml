@@ -1,0 +1,63 @@
+# Two independent Memory Builder loops, each with its own NVIDIA API key,
+# state/output volumes, and web port. They share one BaryGraph endpoint.
+#
+#   cp .env.example .env   (set NVIDIA_API_KEY_1 / NVIDIA_API_KEY_2)
+#   docker compose -f docker-compose.multi.yml up -d --build
+#   http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT_1:-8765}
+#   http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT_2:-8766}
+#
+# Add more services by copying one of the blocks and changing the key,
+# ports, and volume paths.
+
+x-common: &common
+  build:
+    context: .
+  image: memory-builder:latest
+  init: true
+  restart: unless-stopped
+  network_mode: host
+
+services:
+  memory-builder-1:
+    <<: *common
+    container_name: memory-builder-1
+    environment:
+      MEMORY_BUILDER_HOST: ${MEMORY_BUILDER_HOST:-0.0.0.0}
+      MEMORY_BUILDER_PORT: ${MEMORY_BUILDER_WEB_PORT_1:-8765}
+      MEMORY_BUILDER_LOG: ${MEMORY_BUILDER_LOG:-INFO}
+      BARYGRAPH_MCP_URL: ${BARYGRAPH_MCP_URL:-http://127.0.0.1:8000/mcp}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY_1:?set NVIDIA_API_KEY_1 in .env}
+    volumes:
+      - ./docker-data/instance-1/state:/app/.state
+      - ./docker-data/instance-1/output:/app/output
+      - memory-builder-1-agents:/app/.opencode/agents
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT_1:-8765}/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  memory-builder-2:
+    <<: *common
+    container_name: memory-builder-2
+    environment:
+      MEMORY_BUILDER_HOST: ${MEMORY_BUILDER_HOST:-0.0.0.0}
+      MEMORY_BUILDER_PORT: ${MEMORY_BUILDER_WEB_PORT_2:-8766}
+      MEMORY_BUILDER_LOG: ${MEMORY_BUILDER_LOG:-INFO}
+      BARYGRAPH_MCP_URL: ${BARYGRAPH_MCP_URL:-http://127.0.0.1:8000/mcp}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY_2:?set NVIDIA_API_KEY_2 in .env}
+    volumes:
+      - ./docker-data/instance-2/state:/app/.state
+      - ./docker-data/instance-2/output:/app/output
+      - memory-builder-2-agents:/app/.opencode/agents
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT_2:-8766}/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+volumes:
+  memory-builder-1-agents:
+  memory-builder-2-agents:

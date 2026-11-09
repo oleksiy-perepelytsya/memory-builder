@@ -1,0 +1,39 @@
+# Single Memory Builder instance.
+#
+#   1. cp .env.example .env   (set NVIDIA_API_KEY)
+#   2. docker compose up -d --build
+#   3. open http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT:-8765}
+#
+# Uses host networking so the container reaches a BaryGraph running on the
+# Docker host (127.0.0.1:8000) without a firewall hole. On Docker Desktop or
+# when BaryGraph runs elsewhere, see the bridge notes in README.md.
+services:
+  memory-builder:
+    build:
+      context: .
+    image: memory-builder:latest
+    container_name: memory-builder
+    init: true
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MEMORY_BUILDER_HOST: ${MEMORY_BUILDER_HOST:-0.0.0.0}
+      MEMORY_BUILDER_PORT: ${MEMORY_BUILDER_WEB_PORT:-8765}
+      MEMORY_BUILDER_LOG: ${MEMORY_BUILDER_LOG:-INFO}
+      BARYGRAPH_MCP_URL: ${BARYGRAPH_MCP_URL:-http://127.0.0.1:8000/mcp}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:?set NVIDIA_API_KEY in .env}
+    volumes:
+      - ./docker-data/state:/app/.state
+      - ./docker-data/output:/app/output
+      # Named volume so the committed agent prompt is copied in on first run
+      # and prompt edits survive container recreation.
+      - memory-builder-agents:/app/.opencode/agents
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${MEMORY_BUILDER_WEB_PORT:-8765}/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+volumes:
+  memory-builder-agents:

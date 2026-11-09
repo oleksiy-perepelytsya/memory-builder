@@ -4,5 +4,6 @@ __pycache__/
 output/
 .venv/
 .env
+docker-data/
 *.log
 .DS_Store

@@ -1,0 +1,11 @@
+.git
+.gitignore
+.state
+output
+docker-data
+__pycache__
+*.pyc
+.venv
+.env
+*.log
+.DS_Store

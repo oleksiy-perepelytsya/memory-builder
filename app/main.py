@@ -667,6 +667,20 @@ async def run_stop(job_id: str, request: Request) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/run/active")
+async def run_active(request: Request) -> dict:
+    """Return the newest running job so a reloaded page can reattach."""
+    active = [
+        job
+        for job in request.app.state.jobs.jobs.values()
+        if job.status in ("pending", "running")
+    ]
+    if not active:
+        return {"job": None}
+    job = max(active, key=lambda item: item.created)
+    return {"job": {**job.summary(), "results": job.results}}
+
+
 @app.get("/api/run/{job_id}")
 async def run_status(job_id: str, request: Request) -> dict:
     job = request.app.state.jobs.jobs.get(job_id)

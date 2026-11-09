@@ -271,6 +271,10 @@ Every output record is stamped with the prompt version that produced it:
   reopens the same file, appends the missing cycles from where it stopped, and
   keeps the original file name. A small manifest in `.state/run_meta/` records
   the planned cycle count and model, so this also works after a hard stop.
+- Reloading the page while a run is active reattaches to it: the **Live** tab
+  replays the completed cycles and continues streaming. A reload cannot revive
+  a job after the app itself restarted; that run file remains in
+  **Previous runs**.
 - On any parsed record, click **☆ Example** to append it to
   `output/examples.jsonl`. The **Examples** panel lists curated records and lets
   you remove them individually.

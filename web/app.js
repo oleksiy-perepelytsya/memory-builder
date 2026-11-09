@@ -21,6 +21,7 @@ async function boot() {
   await Promise.allSettled([loadHealth(), loadModels()]);
   await Promise.allSettled([loadConfig()]);
   await Promise.allSettled([loadRuns(), loadExamples()]);
+  await Promise.allSettled([reattachRun()]);
 }
 
 function wireControls() {
@@ -475,6 +476,7 @@ async function startRun() {
     promptRevision = res.prompt_revision || promptRevision;
     const { job } = res;
     currentJob = job.id;
+    rememberJob(job);
     $("file-info").textContent = job.prompt_version
       ? `${job.out_path} · prompt v${job.prompt_version}`
       : job.out_path;
@@ -489,6 +491,69 @@ async function startRun() {
       notify("Failed to start: " + e.message, "bad");
     }
   }
+}
+
+function rememberJob(job) {
+  try {
+    sessionStorage.setItem("mb.currentJob", job.id);
+  } catch (e) {
+    // Storage can be unavailable; reattachment is a convenience, not a requirement.
+  }
+}
+
+function forgetJob() {
+  try {
+    sessionStorage.removeItem("mb.currentJob");
+  } catch (e) {
+    // Ignore storage failures.
+  }
+}
+
+// Reattach a reloaded page to a job that is still running server-side. New
+// backends can report the active job directly; older ones fall back to the id
+// this tab remembered when it started or continued the job.
+async function reattachRun() {
+  let job = null;
+  try {
+    const res = await api("/api/run/active");
+    job = res.job || null;
+  } catch (e) {
+    // Older backend without the endpoint; fall through to sessionStorage.
+  }
+  if (!job) {
+    let id = null;
+    try {
+      id = sessionStorage.getItem("mb.currentJob");
+    } catch (e) {
+      // Ignore storage failures.
+    }
+    if (!id) return;
+    try {
+      job = await api(`/api/run/${encodeURIComponent(id)}`);
+    } catch (e) {
+      forgetJob();
+      return;
+    }
+  }
+  if (!job || (job.status !== "running" && job.status !== "pending")) {
+    forgetJob();
+    return;
+  }
+  currentJob = job.id;
+  showLiveResults();
+  $("live").innerHTML = "";
+  $("results").innerHTML = "";
+  cycles.clear();
+  for (const result of job.results || []) completeCycle(result);
+  setRunning(true);
+  $("file-info").textContent = job.prompt_version
+    ? `${job.out_path} · prompt v${job.prompt_version}`
+    : (job.out_path || "");
+  $("run-state").textContent = `job ${job.id} (reattached)`;
+  rememberJob(job);
+  subscribe(job.id);
+  activateTab("live");
+  notify(`Reattached to running job ${job.id}`, "info");
 }
 
 function subscribe(jobId) {
@@ -806,6 +871,7 @@ async function loadExamples() {
 }
 
 function finishJob(d) {
+  forgetJob();
   setRunning(false);
   $("run-state").textContent = `job ${d.status}${d.error ? ": " + d.error : ""}`;
   if (source) { source.close(); source = null; }
@@ -941,6 +1007,7 @@ async function continueRun(run) {
     promptRevision = res.prompt_revision || promptRevision;
     const { job } = res;
     currentJob = job.id;
+    rememberJob(job);
     $("file-info").textContent = job.prompt_version
       ? `${job.out_path} · prompt v${job.prompt_version}`
       : job.out_path;

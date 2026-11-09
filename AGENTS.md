@@ -188,6 +188,17 @@ OpenCode SSE events are translated into app-level events:
 
 The UI consumes these with `EventSource` in `web/app.js`.
 
+### Reattaching a reloaded page
+
+A reload closes the `EventSource` but does not stop the server-side job. The
+page reattaches on boot: it asks `GET /api/run/active` for the newest running
+job, and falls back to the job id remembered in `sessionStorage` for backends
+that predate that endpoint. Reattachment replays the job's completed results
+into `#live` and subscribes to the same SSE stream. The stored id is cleared
+when `job.completed` arrives. A reload cannot revive a job the server no longer
+has (for example after an app restart); that run file stays in **Previous
+runs**.
+
 ## 6. Prompt and agent persistence
 
 There are two prompts:
@@ -263,6 +274,7 @@ Start is blocked and the drawer opens with the comment field focused.
 | `GET` | `/api/config/prompts/versions/{version}` | Full snapshot of one prompt version. |
 | `GET` | `/api/barygraph` | MCP server status from OpenCode. |
 | `POST` | `/api/run` | Start a job from the saved prompt set. |
+| `GET` | `/api/run/active` | Newest running job, used to reattach after a page reload. |
 | `GET` | `/api/run/{job_id}/events` | SSE stream for one job. |
 | `POST` | `/api/run/{job_id}/stop` | Request a stop and abort the current session. |
 | `GET` | `/api/run/{job_id}` | Job summary plus completed results. |
@@ -395,9 +407,12 @@ Known operational issues on this machine:
 - The prompt drawer shows the version selector with date + comment. Current
   version is marked `●`; selecting an older version displays "Viewing vN".
 - Toasts are used for save/run/load feedback.
-- UI assets are cache-busted with `?v=14`. After changing `web/app.js` or
+- UI assets are cache-busted with `?v=16`. After changing `web/app.js` or
   `web/styles.css`, bump the version in `web/index.html` so a stale tab cannot
   keep old behavior.
+- Reloading the page must reattach to a running job: boot asks
+  `/api/run/active`, falls back to the `sessionStorage` job id, replays the
+  completed results, and subscribes to the same SSE stream.
 - The identity pilot is a separate page (`/pilot`) with its own
   `pilot.html` / `pilot.js` / `pilot.css` and its own cache-busting versions. It
   must not import main-page state assumptions or alter `#results` /

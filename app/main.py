@@ -859,6 +859,32 @@ async def pilot_memory_download() -> FileResponse:
     )
 
 
+def _pilot_run_question(path: Path) -> str:
+    """Return the question stored in a pilot run file, if it can be read."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = parse_json_object(line)
+            if isinstance(record, dict):
+                question = record.get("question") or record.get("_question") or ""
+                return " ".join(str(question).split())
+            break
+    except Exception:
+        pass
+    return ""
+
+
+def _pilot_run_title(question: str, fallback: str) -> str:
+    """Human label for a run list row: the question, trimmed to ~50 chars."""
+    question = " ".join((question or "").split())
+    if not question:
+        return fallback
+    if len(question) <= 50:
+        return question
+    return question[:50].rstrip() + "…"
+
+
 @app.get("/api/pilot/runs")
 async def pilot_runs() -> dict:
     runs = []
@@ -868,7 +894,16 @@ async def pilot_runs() -> dict:
         reverse=True,
     ):
         stat = path.stat()
-        runs.append({"name": path.name, "size": stat.st_size, "mtime": stat.st_mtime})
+        question = _pilot_run_question(path)
+        runs.append(
+            {
+                "name": path.name,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "question": question,
+                "title": _pilot_run_title(question, path.name),
+            }
+        )
     return {"runs": runs, "directory": str(config.PILOT_RUNS_DIR)}
 
 

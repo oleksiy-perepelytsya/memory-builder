@@ -361,8 +361,9 @@ function ensureStep(number) {
 
   const body = el("div", "step-body");
 
+  // Thoughts stay folded so a long trajectory remains scannable; the final
+  // answer card re-opens the last thought when the run completes.
   const thoughtDetails = el("details");
-  thoughtDetails.open = true;
   thoughtDetails.appendChild(el("summary", "", "Thought"));
   const thoughtPre = el("pre", "thought", "");
   thoughtDetails.appendChild(thoughtPre);
@@ -595,6 +596,8 @@ function renderFinal(record) {
   const body = el("div", "step-body");
 
   const answer = el("details");
+  // Unlike step thoughts, the final thought is open so the conclusion is
+  // visible without expanding anything.
   answer.open = true;
   answer.appendChild(el("summary", "", "Final thought"));
   answer.appendChild(
@@ -890,7 +893,10 @@ async function loadRuns() {
     }
     for (const run of runs) {
       const row = el("div", "run-row");
-      const name = el("span", "name", run.name);
+      const label = el("div", "run-label");
+      const title = el("span", "run-title", run.title || run.name);
+      if (run.question) title.title = run.question;
+      label.append(title, el("span", "run-file", run.name));
       const actions = el("div", "actions");
       const load = el("button", "secondary small", "Load");
       load.onclick = () => loadRun(run.name);
@@ -899,7 +905,7 @@ async function loadRuns() {
       const remove = el("button", "danger small", "Delete");
       remove.onclick = () => deleteRun(run.name);
       actions.append(load, download, remove);
-      row.append(name, actions);
+      row.append(label, actions);
       list.appendChild(row);
     }
   } catch (error) {

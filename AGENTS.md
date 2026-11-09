@@ -387,6 +387,9 @@ Known operational issues on this machine:
 - Pilot live steps use `step.started`, `step.thought`, `step.constructs`,
   `step.memory`, and `step.completed`. Do not collapse them into the main
   cycle event names.
+- Pilot step thoughts are folded by default; the final-answer card opens the
+  last thought. Previous pilot runs are listed by the question (truncated to
+  ~50 chars), with the filename kept as a secondary line.
 - Preserve the existing plain HTML/CSS/JS approach. There is no frontend build
   step or framework.
 

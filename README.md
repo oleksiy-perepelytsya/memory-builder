@@ -40,6 +40,10 @@ The pilot is intentionally simple: retrieval is word overlap, not embeddings or
 BaryGraph vector search. Treat it as a test harness for trajectory changes and
 construct memory, not as a finished identity model.
 
+On the page, step thoughts are folded by default so a long trajectory stays
+scannable; the final answer card opens the last thought. Previous pilot runs are
+listed by the first ~50 characters of their question instead of the filename.
+
 ## Architecture
 
 ```

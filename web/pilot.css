@@ -280,5 +280,7 @@ main { padding: 16px 18px 40px; display: grid; gap: 16px; }
 .runs-panel { margin-top: 0; }
 .runs-list { padding: 12px 14px; display: grid; gap: 7px; }
 .run-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #12161d; }
-.run-row .name { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #cbd7f0; }
-.run-row .actions { display: flex; gap: 6px; }
+.run-row .run-label { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.run-row .run-title { font-size: 13px; color: #e6edf7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-row .run-file { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.run-row .actions { display: flex; gap: 6px; flex: none; }
